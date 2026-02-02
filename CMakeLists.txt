@@ -8,8 +8,8 @@ enable_language(CXX)
 set(CMAKE_CXX_STANDARD 20)
 
 # build type
-message("*** Type: ${CMAKE_BUILD_TYPE}${CMAKE_CONFIGURATION_TYPES}")
-add_compile_definitions($<$<CONFIG:Debug>:DEBUG>)
+message("*** Type: ${CMAKE_BUILD_TYPE}") #${CMAKE_CONFIGURATION_TYPES}")
+add_compile_definitions($<$<CONFIG:Debug>:DEBUG> $<$<CONFIG:Release>:NDEBUG>) # assert() is disabled when NDEBUG is defined
 
 # compiler
 message("*** Compiler: ${CMAKE_CXX_COMPILER_ID}")
@@ -27,7 +27,7 @@ message("*** Platform: ${PLATFORM}")
 find_package(coco CONFIG)
 find_package(coco-loop CONFIG)
 find_package(coco-device CONFIG)
-find_package(coco-udp CONFIG)
+find_package(coco-ip CONFIG)
 find_package(coco-devboards CONFIG)
 
 # source

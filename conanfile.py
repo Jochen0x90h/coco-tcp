@@ -23,11 +23,11 @@ class Project(ConanFile):
         return False
 
     def requirements(self):
-        self.requires("coco-udp/0.1.0", options={"platform": self.options.platform})
+        self.requires("coco-ip/0.2.0", options={"platform": self.options.platform})
 
     def build_requirements(self):
-        self.tool_requires("coco-toolchain/0.3.0", options={"platform": self.options.platform})
-        self.test_requires("coco-devboards/0.6.0", options={"platform": self.options.platform})
+        self.tool_requires("coco-toolchain/0.4.0", options={"platform": self.options.platform})
+        self.test_requires("coco-devboards/0.7.0", options={"platform": self.options.platform})
 
     keep_imports = True
     def imports(self):

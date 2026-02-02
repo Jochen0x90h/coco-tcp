@@ -1,40 +1,43 @@
 #pragma once
 
-#include <coco/ipv6.hpp>
+#include <coco/ip.hpp>
 #include <coco/BufferDevice.hpp>
 
 
 namespace coco {
 
-/**
- * TCP server socket
- */
+/// @brief TCP server socket.
+/// Used to listen for client connections on a port
 class TcpServer {
 public:
     virtual ~TcpServer() {}
 
-    /**
-     * Listen on a port
-     * @param port local port to listen for incoming connections
-     * @return true if server was started, false on error
-     */
-    virtual bool listen(uint16_t port) = 0;
+    /// @brief Listen on a port
+    /// @param protocolId Protocol id such as ip::v4::PROTOCOL_ID or ip::v6::PROTOCOL_ID
+    /// @param port Local port to listen for incoming connections
+    /// @return true if server was started, false on error
+    virtual bool listen(uint16_t protocolId, uint16_t port) = 0;
 
-    /**
-     * Close the server
-     */
+    /// @brief Close the server
+    ///
     virtual void close() = 0;
 
 
+    /// @brief Server socket
+    /// Is associated with a server and can accept() a single connection.
     class Socket : public BufferDevice {
     public:
         Socket(State state) : BufferDevice(state) {}\
 
-        /**
-         * Accept an incoming connection
-         * @return true if accept operation was started, false on error
-         */
+        /// @brief Accept an incoming connection.
+        /// Can be called only if the device is in DISABLED state.
+        /// Use close() to end a connection and accept() a new one after device has returned to DISABLED state.
+        /// @return true if accept operation was started, false on error
         virtual bool accept() = 0;
+
+        /// @brief get local or remote endpoint after accept() succeeded (device is in READY state)
+        /// @return Local or remote endpoint
+        virtual ip::Endpoint &getEndpoint(bool remote) = 0;
     };
 };
 

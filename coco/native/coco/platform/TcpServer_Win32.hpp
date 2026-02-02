@@ -13,23 +13,20 @@ namespace coco {
 
 class TcpServer_Win32 : public TcpServer, public Loop_Win32::CompletionHandler {
 public:
-    /**
-     * Constructor
-     * @param loop event loop
-     */
+    /// @brief Constructor
+    /// @param loop event loop
     TcpServer_Win32(Loop_Win32 &loop);
 
     ~TcpServer_Win32() override;
 
-    bool listen(uint16_t port) override;
+    bool listen(uint16_t protocolId, uint16_t port) override;
     void close() override;
 
 
     class Socket;
 
-    /**
-     * Buffer for transferring data to/from a file
-     */
+    /// @brief Buffer for sending/receiving data
+    ///
     class Buffer : public coco::Buffer, public IntrusiveListNode, public IntrusiveListNode2 {
         friend class Socket;
     public:
@@ -43,12 +40,13 @@ public:
         void start();
         void handle(OVERLAPPED *overlapped);
 
-        Socket &device;
-        OVERLAPPED overlapped;
-        Op op;
+        Socket &device_;
+        OVERLAPPED overlapped_;
+        Op op_;
     };
 
-
+    /// @brief Server socket that can accept a connection
+    ///
     class Socket : public TcpServer::Socket, public Loop_Win32::CompletionHandler , public IntrusiveListNode {
         friend class TcpServer_Win32;
         friend class Buffer;
@@ -57,7 +55,6 @@ public:
         ~Socket() override;
 
         // Device methods
-        //StateTasks<const State, Events> &getStateTasks() override;
         void close() override;
 
         // BufferDevice methods
@@ -66,40 +63,45 @@ public:
 
         // TcpServer::Socket methods
         bool accept() override;
+        ip::Endpoint &getEndpoint(bool remote) override;
 
     protected:
         void handleAccept(OVERLAPPED *overlapped);
         void handle(OVERLAPPED *overlapped) override;
 
-        TcpServer_Win32 &server;
+        TcpServer_Win32 &server_;
 
         // socket handle
-        SOCKET socket = INVALID_SOCKET;
-        uint8_t buffer[(sizeof(sockaddr_in6) + 16) * 2];
-        OVERLAPPED overlapped;
+        SOCKET socket_ = INVALID_SOCKET;
 
-        // device state
-        //StateTasks<State, Events> st = State::DISABLED;
+        // local and remote address
+        struct AddressBuffer {
+            ip::Endpoint endpoint = {};
+            uint8_t extra[16]; // see AcceptEx documentation
+        };
+        AddressBuffer addressBuffers_[2];
+        OVERLAPPED overlapped_;
 
         // list of buffers
-        IntrusiveList<Buffer> buffers;
+        IntrusiveList<Buffer> buffers_;
 
         // pending transfers
-        IntrusiveList2<Buffer> transfers;
+        IntrusiveList2<Buffer> transfers_;
     };
 
 protected:
     void handle(OVERLAPPED *overlapped) override;
 
-    Loop_Win32 &loop;
+    Loop_Win32 &loop_;
 
-    // server socket handle
-    SOCKET socket = INVALID_SOCKET;
+    // server socket protocol and handle
+    int protocolId_ = 0;
+    SOCKET socket_ = INVALID_SOCKET;
 
     LPFN_ACCEPTEX AcceptEx = NULL;
 
     // list of sockets
-    IntrusiveList<Socket> sockets;
+    IntrusiveList<Socket> sockets_;
 };
 
 } // namespace coco

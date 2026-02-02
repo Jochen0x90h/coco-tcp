@@ -5,7 +5,7 @@
 namespace coco {
 
 TcpServer_Win32::TcpServer_Win32(Loop_Win32 &loop)
-    : loop(loop)
+    : loop_(loop)
 {
     // initialize winsock
     WSADATA wsaData;
@@ -13,21 +13,24 @@ TcpServer_Win32::TcpServer_Win32(Loop_Win32 &loop)
 }
 
 TcpServer_Win32::~TcpServer_Win32() {
-    closesocket(this->socket);
+    closesocket(socket_);
     WSACleanup();
 }
 
-bool TcpServer_Win32::listen(uint16_t port) {
+bool TcpServer_Win32::listen(uint16_t protocolId, uint16_t port) {
+    if (socket_ != INVALID_SOCKET)
+        return false;
+
     // create socket
-    SOCKET socket = WSASocket(AF_INET6, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
+    SOCKET socket = WSASocket(protocolId, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
     if (socket == INVALID_SOCKET) {
         int e = WSAGetLastError();
         return false;
     }
 
     // bind to local port
-    sockaddr_in6 ep = {.sin6_family = AF_INET6, .sin6_port = htons(port)};
-    if (bind(socket, (struct sockaddr *)&ep, sizeof(ep)) != 0) {
+    sockaddr_in6 local = {.sin6_family = protocolId, .sin6_port = htons(port)};
+    if (bind(socket, (struct sockaddr *)&local, sizeof(local)) != 0) {
         int e = WSAGetLastError();
         closesocket(socket);
         return false;
@@ -37,7 +40,7 @@ bool TcpServer_Win32::listen(uint16_t port) {
     Loop_Win32::CompletionHandler *handler = this;
     if (CreateIoCompletionPort(
         (HANDLE)socket,
-        this->loop.port,
+        loop_.port,
         ULONG_PTR(handler),
         0) == nullptr)
     {
@@ -59,25 +62,26 @@ bool TcpServer_Win32::listen(uint16_t port) {
     DWORD transferred;
     if (WSAIoctl(socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
         &guidAcceptEx, sizeof(guidAcceptEx),
-        &this->AcceptEx, sizeof(this->AcceptEx),
+        &AcceptEx, sizeof(AcceptEx),
         &transferred, NULL, NULL) != 0)
     {
         int e = WSAGetLastError();
         closesocket(socket);
         return false;
     }
-    this->socket = socket;
+    protocolId_ = protocolId;
+    socket_ = socket;
     return true;
 }
 
 void TcpServer_Win32::close() {
-    closesocket(this->socket);
-    this->socket = INVALID_SOCKET;
+    closesocket(socket_);
+    socket_ = INVALID_SOCKET;
 }
 
 void TcpServer_Win32::handle(OVERLAPPED *overlapped) {
-    for (auto &socket : this->sockets) {
-        if (overlapped == &socket.overlapped) {
+    for (auto &socket : sockets_) {
+        if (overlapped == &socket.overlapped_) {
             socket.handleAccept(overlapped);
             break;
         }
@@ -85,70 +89,59 @@ void TcpServer_Win32::handle(OVERLAPPED *overlapped) {
 }
 
 
-// Socket
+// TcpServer_Win32::Socket
 
 TcpServer_Win32::Socket::Socket(TcpServer_Win32 &server)
     : TcpServer::Socket(State::DISABLED)
-    , server(server)
+    , server_(server)
 {
-    server.sockets.add(*this);
+    server.sockets_.add(*this);
 }
 
 TcpServer_Win32::Socket::~Socket() {
-    closesocket(this->socket);
+    closesocket(socket_);
 }
-
-//StateTasks<const Device::State, Device::Events> &TcpServer_Win32::Socket::getStateTasks() {
-//	return makeConst(this->st);
-//}
-/*
-BufferDevice::State TcpServer_Win32::Socket::state() {
-    return this->stat;
-}
-
-Awaitable<Device::Condition> TcpServer_Win32::Socket::until(Condition condition) {
-    // check if IN_* condition is met
-    if ((int(condition) >> int(this->stat)) & 1)
-        return {}; // don't wait
-    return {this->stateTasks, condition};
-}*/
 
 void TcpServer_Win32::Socket::close() {
+    if (socket_ == INVALID_SOCKET)
+        return;
+
     // close socket
-    closesocket(this->socket);
-    this->socket = INVALID_SOCKET;
+    closesocket(socket_);
+    socket_ = INVALID_SOCKET;
+
+    // clear local and remote address
+    addressBuffers_[0].endpoint = {};
+    addressBuffers_[1].endpoint = {};
 
     // set state
-    this->st.state = State::CLOSING;
+    st.set(State::DISABLED);
 
     // set state of buffers to disabled
-    for (auto &buffer : this->buffers) {
+    for (auto &buffer : buffers_) {
         buffer.setDisabled();
     }
 
-    // set state
-    this->st.state = State::DISABLED;
-
     // resume all coroutines waiting for disabled state
-    this->st.doAll(Events::ENTER_CLOSING | Events::ENTER_DISABLED);
-    //this->stateTasks.doAll([](Condition condition) {
-    //	return (condition & (Condition::ENTER_CLOSING | Condition::ENTER_DISABLED)) != 0;
-    //});
+    st.notify(Events::ENTER_CLOSING | Events::ENTER_DISABLED);
 }
 
 int TcpServer_Win32::Socket::getBufferCount() {
-    return this->buffers.count();
+    return buffers_.count();
 }
 
 TcpServer_Win32::Buffer &TcpServer_Win32::Socket::getBuffer(int index) {
-    return this->buffers.get(index);
+    return buffers_.get(index);
 }
 
 bool TcpServer_Win32::Socket::accept() {
-    auto &server = this->server;
+    if (socket_ != INVALID_SOCKET)
+        return false;
+
+    auto &server = server_;
 
     // create socket
-    SOCKET socket = WSASocket(AF_INET6, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
+    SOCKET socket = WSASocket(server.protocolId_, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
     if (socket == INVALID_SOCKET) {
         int e = WSAGetLastError();
         return false;
@@ -158,7 +151,7 @@ bool TcpServer_Win32::Socket::accept() {
     Loop_Win32::CompletionHandler *handler = this;
     if (CreateIoCompletionPort(
         (HANDLE)socket,
-        server.loop.port,
+        server.loop_.port,
         ULONG_PTR(handler),
         0) == nullptr)
     {
@@ -168,15 +161,16 @@ bool TcpServer_Win32::Socket::accept() {
     }
 
     // accept
-    memset(&this->overlapped, 0, sizeof(OVERLAPPED));
+    // https://learn.microsoft.com/de-de/windows/win32/api/mswsock/nf-mswsock-acceptex
+    memset(&overlapped_, 0, sizeof(OVERLAPPED));
     if (server.AcceptEx(
-        server.socket,
+        server.socket_,
         socket,
-        this->buffer, // buffer for addresses
+        addressBuffers_, // buffer for addresses
         0, // receive size
-        sizeof(sockaddr_in6) + 16, sizeof(sockaddr_in6) + 16,
+        sizeof(AddressBuffer), sizeof(AddressBuffer), // sizes for local and remote address
         nullptr,
-        &this->overlapped) == FALSE)
+        &overlapped_) == FALSE)
     {
         int error = WSAGetLastError();
         if (error != ERROR_IO_PENDING) {
@@ -185,56 +179,54 @@ bool TcpServer_Win32::Socket::accept() {
             return false;
         }
     }
-    this->socket = socket;
+    socket_ = socket;
 
     // set state
-    this->st.state = State::OPENING;
+    st.set(State::OPENING);
 
     // enable buffers
-    for (auto &buffer : this->buffers) {
+    for (auto &buffer : buffers_) {
         buffer.setReady();
     }
 
     // resume all coroutines waiting for state change
-    this->st.doAll(Events::ENTER_OPENING);
-    //this->stateTasks.doAll([](Condition condition) {
-    //	return (condition & Condition::ENTER_OPENING) != 0;
-    //});
+    st.notify(Events::ENTER_OPENING);
 
     return true;
+}
+
+ip::Endpoint &TcpServer_Win32::Socket::getEndpoint(bool remote) {
+    return addressBuffers_[int(remote)].endpoint;
 }
 
 void TcpServer_Win32::Socket::handleAccept(OVERLAPPED *overlapped) {
     // result of AcceptEx
     DWORD transferred;
     DWORD flags;
-    auto result = WSAGetOverlappedResult(this->socket, overlapped, &transferred, false, &flags);
+    auto result = WSAGetOverlappedResult(socket_, overlapped, &transferred, false, &flags);
     if (!result) {
         // "real" error or cancelled (ERROR_OPERATION_ABORTED): close
         auto error = WSAGetLastError();
         close();
     } else {
-        setsockopt(this->socket, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, (char *)&this->server.socket, sizeof(SOCKET));
+        setsockopt(socket_, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, (char *)&server_.socket_, sizeof(SOCKET));
 
         // set state
-        this->st.state = State::READY;
+        st.set(State::READY);
 
         // start pending transfers
-        for (auto &buffer : this->transfers) {
+        for (auto &buffer : transfers_) {
             buffer.start();
         }
 
         // resume all coroutines waiting for state change
-        this->st.doAll(Events::ENTER_READY);
-        //this->stateTasks.doAll([](Condition condition) {
-        //	return (condition & Condition::ENTER_READY) != 0;
-        //});
+        st.notify(Events::ENTER_READY);
     }
 }
 
 void TcpServer_Win32::Socket::handle(OVERLAPPED *overlapped) {
-    for (auto &buffer : this->transfers) {
-        if (overlapped == &buffer.overlapped) {
+    for (auto &buffer : transfers_) {
+        if (overlapped == &buffer.overlapped_) {
             buffer.handle(overlapped);
             break;
         }
@@ -242,34 +234,34 @@ void TcpServer_Win32::Socket::handle(OVERLAPPED *overlapped) {
 }
 
 
-// Buffer
+// TcpServer_Win32::Buffer
 
 TcpServer_Win32::Buffer::Buffer(TcpServer_Win32::Socket &device, int size)
     : coco::Buffer(new uint8_t[size], size, device.st.state)
-    , device(device)
+    , device_(device)
 {
-    device.buffers.add(*this);
+    device.buffers_.add(*this);
 }
 
 TcpServer_Win32::Buffer::~Buffer() {
-    delete [] this->p.data;
+    delete [] data_;
 }
 
 bool TcpServer_Win32::Buffer::start(Op op) {
-    if (this->st.state != State::READY) {
-        assert(this->st.state != State::BUSY);
+    if (st.state != State::READY) {
+        assert(st.state != State::BUSY);
         return false;
     }
 
     // check if READ or WRITE flag is set
     assert((op & Op::READ_WRITE) != 0);
-    this->op = op;
+    op_ = op;
 
     // add to list of pending transfers
-    this->device.transfers.add(*this);
+    device_.transfers_.add(*this);
 
     // start if device is ready
-    if (this->device.st.state == Device::State::READY)
+    if (device_.st.state == Device::State::READY)
         start();
 
     // set state
@@ -279,10 +271,10 @@ bool TcpServer_Win32::Buffer::start(Op op) {
 }
 
 bool TcpServer_Win32::Buffer::cancel() {
-    if (this->st.state != State::BUSY)
+    if (st.state != State::BUSY)
         return false;
 
-    auto result = CancelIoEx((HANDLE)this->device.socket, &this->overlapped);
+    auto result = CancelIoEx((HANDLE)device_.socket_, &overlapped_);
     if (!result) {
         auto e = WSAGetLastError();
         std::cerr << "cancel error " << e << std::endl;
@@ -293,18 +285,18 @@ bool TcpServer_Win32::Buffer::cancel() {
 
 void TcpServer_Win32::Buffer::start() {
     // initialize overlapped
-    memset(&this->overlapped, 0, sizeof(OVERLAPPED));
+    memset(&overlapped_, 0, sizeof(OVERLAPPED));
 
     int result;
-    if ((op & Op::WRITE) == 0) {
+    if ((op_ & Op::WRITE) == 0) {
         // receive
-        WSABUF buffer{this->p.capacity, (CHAR*)(this->p.data)};
+        WSABUF buffer{capacity_, (CHAR*)(data_)};
         DWORD flags = 0;
-        result = WSARecv(this->device.socket, &buffer, 1, nullptr, &flags, &this->overlapped, nullptr);
+        result = WSARecv(device_.socket_, &buffer, 1, nullptr, &flags, &overlapped_, nullptr);
     } else {
         // send
-        WSABUF buffer{this->p.size, (CHAR*)(this->p.data)};
-        result = WSASend(this->device.socket, &buffer, 1, nullptr, 0, &this->overlapped, nullptr);
+        WSABUF buffer{size_, (CHAR*)(data_)};
+        result = WSASend(device_.socket_, &buffer, 1, nullptr, 0, &overlapped_, nullptr);
     }
     if (result != 0) {
         int error = WSAGetLastError();
@@ -318,7 +310,7 @@ void TcpServer_Win32::Buffer::start() {
 void TcpServer_Win32::Buffer::handle(OVERLAPPED *overlapped) {
     DWORD transferred;
     DWORD flags;
-    auto result = WSAGetOverlappedResult(this->device.socket, overlapped, &transferred, false, &flags);
+    auto result = WSAGetOverlappedResult(device_.socket_, overlapped, &transferred, false, &flags);
     if (!result) {
         // "real" error or cancelled (ERROR_OPERATION_ABORTED): return zero size
         auto error = WSAGetLastError();
