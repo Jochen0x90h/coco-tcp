@@ -14,8 +14,8 @@
 
 
 Coroutine server(Loop &loop, TcpServer::Socket &serverSocket, Buffer &buffer) {
-    // wait until socket is ready, not needed as read/write wait until socket becomes ready
-    //co_await serverSocket.untilReadyOrDisabled();
+    // wait until socket is ready
+    co_await serverSocket.untilReadyOrDisabled();
 
     // receive from client
     co_await buffer.read();
@@ -34,8 +34,8 @@ Coroutine server(Loop &loop, TcpServer::Socket &serverSocket, Buffer &buffer) {
 
 
 Coroutine client(Loop &loop, IpSocket &socket, Buffer &buffer) {
-    // wait until socket is ready, not needed as read/write wait until socket becomes ready
-    //co_await socket.untilReadyOrDisabled();
+    // wait until socket is ready
+    co_await socket.untilReadyOrDisabled();
 
     // send to server
     co_await buffer.write("GET / HTTP/1.1\r\nHost: wikipedia.de\r\nUser-Agent: curl/7.87.0\r\nAccept: */*\r\n\r\n");

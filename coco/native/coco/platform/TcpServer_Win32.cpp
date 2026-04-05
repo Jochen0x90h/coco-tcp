@@ -37,11 +37,10 @@ bool TcpServer_Win32::listen(uint16_t protocolId, uint16_t port) {
     }
 
     // add socket to completion port of event loop
-    Loop_Win32::CompletionHandler *handler = this;
     if (CreateIoCompletionPort(
         (HANDLE)socket,
         loop_.port,
-        ULONG_PTR(handler),
+        ULONG_PTR(&static_cast<Loop_Win32::CompletionHandler &>(*this)),
         0) == nullptr)
     {
         int e = WSAGetLastError();
@@ -115,7 +114,7 @@ void TcpServer_Win32::Socket::close() {
     addressBuffers_[1].endpoint = {};
 
     // set state
-    st.set(State::DISABLED);
+    state_ = State::DISABLED;
 
     // set state of buffers to disabled
     for (auto &buffer : buffers_) {
@@ -123,7 +122,7 @@ void TcpServer_Win32::Socket::close() {
     }
 
     // resume all coroutines waiting for disabled state
-    st.notify(Events::ENTER_CLOSING | Events::ENTER_DISABLED);
+    notify(Events::ENTER_CLOSING | Events::ENTER_DISABLED);
 }
 
 int TcpServer_Win32::Socket::getBufferCount() {
@@ -148,11 +147,10 @@ bool TcpServer_Win32::Socket::accept() {
     }
 
     // add socket to completion port of event loop
-    Loop_Win32::CompletionHandler *handler = this;
     if (CreateIoCompletionPort(
         (HANDLE)socket,
         server.loop_.port,
-        ULONG_PTR(handler),
+        ULONG_PTR(&static_cast<Loop_Win32::CompletionHandler &>(*this)),
         0) == nullptr)
     {
         int e = WSAGetLastError();
@@ -182,7 +180,7 @@ bool TcpServer_Win32::Socket::accept() {
     socket_ = socket;
 
     // set state
-    st.set(State::OPENING);
+    state_ = State::OPENING;
 
     // enable buffers
     for (auto &buffer : buffers_) {
@@ -190,7 +188,7 @@ bool TcpServer_Win32::Socket::accept() {
     }
 
     // resume all coroutines waiting for state change
-    st.notify(Events::ENTER_OPENING);
+    notify(Events::ENTER_OPENING);
 
     return true;
 }
@@ -212,20 +210,27 @@ void TcpServer_Win32::Socket::handleAccept(OVERLAPPED *overlapped) {
         setsockopt(socket_, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, (char *)&server_.socket_, sizeof(SOCKET));
 
         // set state
-        st.set(State::READY);
+        state_ = State::READY;
 
         // start pending transfers
-        for (auto &buffer : transfers_) {
-            buffer.start();
-        }
+        //for (auto &buffer : transfers_) {
+        //    buffer.start();
+        //}
 
         // resume all coroutines waiting for state change
-        st.notify(Events::ENTER_READY);
+        notify(Events::ENTER_READY);
     }
 }
 
 void TcpServer_Win32::Socket::handle(OVERLAPPED *overlapped) {
-    for (auto &buffer : transfers_) {
+    /*for (auto &buffer : transfers_) {
+        if (overlapped == &buffer.overlapped_) {
+            buffer.handle(overlapped);
+            break;
+        }
+    }*/
+    // search the buffer that caused the event
+    for (auto &buffer : buffers_) {
         if (overlapped == &buffer.overlapped_) {
             buffer.handle(overlapped);
             break;
@@ -237,7 +242,7 @@ void TcpServer_Win32::Socket::handle(OVERLAPPED *overlapped) {
 // TcpServer_Win32::Buffer
 
 TcpServer_Win32::Buffer::Buffer(TcpServer_Win32::Socket &device, int size)
-    : coco::Buffer(new uint8_t[size], size, device.st.state)
+    : coco::Buffer(new uint8_t[size], size, device.state_)
     , device_(device)
 {
     device.buffers_.add(*this);
@@ -247,22 +252,23 @@ TcpServer_Win32::Buffer::~Buffer() {
     delete [] data_;
 }
 
-bool TcpServer_Win32::Buffer::start(Op op) {
-    if (st.state != State::READY) {
-        assert(st.state != State::BUSY);
+bool TcpServer_Win32::Buffer::start() {
+    if (state_ != State::READY) {
+        assert(false);
+        setError(std::errc::resource_unavailable_try_again);
+        return false;
+    }
+    if ((op_ & Op::READ_WRITE) == 0 || size_ == 0) {
+        setSuccess();
         return false;
     }
 
-    // check if READ or WRITE flag is set
-    assert((op & Op::READ_WRITE) != 0);
-    op_ = op;
+    // store read/write flags for use in transfer(), handle() and cancel()
+    steps_ = uint8_t(op_ & Op::READ_WRITE);
 
-    // add to list of pending transfers
-    device_.transfers_.add(*this);
-
-    // start if device is ready
-    if (device_.st.state == Device::State::READY)
-        start();
+    // start transfer
+    if (!transfer())
+        return false;
 
     // set state
     setBusy();
@@ -271,24 +277,29 @@ bool TcpServer_Win32::Buffer::start(Op op) {
 }
 
 bool TcpServer_Win32::Buffer::cancel() {
-    if (st.state != State::BUSY)
+    if (state_ != State::BUSY)
         return false;
 
-    auto result = CancelIoEx((HANDLE)device_.socket_, &overlapped_);
-    if (!result) {
-        auto e = WSAGetLastError();
-        std::cerr << "cancel error " << e << std::endl;
+    if (steps_ != 0) {
+        auto result = CancelIoEx((HANDLE)device_.socket_, &overlapped_);
+        if (!result) {
+            // error
+            auto error = WSAGetLastError();
+            setSystemError(error);
+            //debug::out << "cancel error " << dec(e) << '\n';
+            return false;
+        }
+        steps_ = 0;
     }
-
     return true;
 }
 
-void TcpServer_Win32::Buffer::start() {
+bool TcpServer_Win32::Buffer::transfer() {
     // initialize overlapped
     memset(&overlapped_, 0, sizeof(OVERLAPPED));
 
     int result;
-    if ((op_ & Op::WRITE) == 0) {
+    if ((Op(steps_) & Op::WRITE) == 0) {
         // receive
         WSABUF buffer{capacity_, (CHAR*)(data_)};
         DWORD flags = 0;
@@ -298,30 +309,39 @@ void TcpServer_Win32::Buffer::start() {
         WSABUF buffer{size_, (CHAR*)(data_)};
         result = WSASend(device_.socket_, &buffer, 1, nullptr, 0, &overlapped_, nullptr);
     }
+
     if (result != 0) {
         int error = WSAGetLastError();
         if (error != WSA_IO_PENDING) {
-            // "real" error
-            setReady(0);
-        }
+            // error
+            setSystemError(error);
+            setReady();
+            return false;        }
     }
+    return true;
 }
 
 void TcpServer_Win32::Buffer::handle(OVERLAPPED *overlapped) {
     DWORD transferred;
     DWORD flags;
     auto result = WSAGetOverlappedResult(device_.socket_, overlapped, &transferred, false, &flags);
-    if (!result) {
-        // "real" error or cancelled (ERROR_OPERATION_ABORTED): return zero size
+    if (result) {
+        // success, check for read after write
+        if (Op(steps_) == Op::READ_WRITE) {
+            steps_ = int(Op::READ);
+            transfer();
+            return;
+        }
+        setSuccess(transferred);
+    } else {
+        // error
+        // canceled: ERROR_OPERATION_ABORTED
         auto error = WSAGetLastError();
-        transferred = 0;
+        setSystemError(error);
     }
 
-    // remove from list of active transfers
-    remove2();
-
     // transfer finished
-    setReady(transferred);
+    setReady();
 }
 
 } // namespace coco

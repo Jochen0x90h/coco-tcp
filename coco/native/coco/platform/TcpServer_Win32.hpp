@@ -27,22 +27,22 @@ public:
 
     /// @brief Buffer for sending/receiving data
     ///
-    class Buffer : public coco::Buffer, public IntrusiveListNode, public IntrusiveListNode2 {
+    class Buffer : public coco::Buffer, public IntrusiveListNode {//, public IntrusiveListNode2 {
         friend class Socket;
     public:
         Buffer(Socket &socket, int size);
         ~Buffer() override;
 
-        bool start(Op op) override;
+        bool start() override;
         bool cancel() override;
 
     protected:
-        void start();
+        bool transfer();
         void handle(OVERLAPPED *overlapped);
 
         Socket &device_;
         OVERLAPPED overlapped_;
-        Op op_;
+        //Op op_;
     };
 
     /// @brief Server socket that can accept a connection
@@ -86,7 +86,7 @@ public:
         IntrusiveList<Buffer> buffers_;
 
         // pending transfers
-        IntrusiveList2<Buffer> transfers_;
+        //IntrusiveList2<Buffer> transfers_;
     };
 
 protected:

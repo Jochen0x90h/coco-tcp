@@ -14,11 +14,18 @@
 
 
 Coroutine server(Loop &loop, TcpServer::Socket &serverSocket, Buffer &buffer) {
-    // wait until socket is ready, not needed as read/write wait until socket becomes ready
-    //co_await serverSocket.untilReadyOrDisabled();
+    // wait until socket is ready
+    co_await serverSocket.untilReadyOrDisabled();
 
     // receive from client
     co_await buffer.read();
+
+    // check for errors
+    if (buffer.error()) {
+        debug::out << "Server: Read error " << buffer.error().message() << '\n';
+        loop.exit();
+        co_return;
+    }
 
     // get remote endpoint
     auto &ep = serverSocket.getEndpoint(true);
@@ -34,14 +41,29 @@ Coroutine server(Loop &loop, TcpServer::Socket &serverSocket, Buffer &buffer) {
 
 
 Coroutine client(Loop &loop, IpSocket &socket, Buffer &buffer) {
-    // wait until socket is ready, not needed as read/write wait until socket becomes ready
-    //co_await socket.untilReadyOrDisabled();
+    // wait until socket is ready
+    co_await socket.untilReadyOrDisabled();
 
     // send to server
     co_await buffer.write("GET / HTTP/1.1\r\nHost: wikipedia.de\r\nUser-Agent: curl/7.87.0\r\nAccept: */*\r\n\r\n");
 
+    // check for errors
+    if (buffer.error()) {
+        debug::out << "Client: Write error " << buffer.error().message() << '\n';
+        loop.exit();
+        co_return;
+    }
+
     // wait for reply from server (is "Hello World" when connected to localhost or a HTTP page when connected to wikipedia.de)
     co_await buffer.read();
+
+    // check for errors
+    if (buffer.error()) {
+        debug::out << "Client: Read error " << buffer.error().message() << '\n';
+        loop.exit();
+        co_return;
+    }
+
     int transferred = buffer.size();
 
     debug::out << "Client: Received \"" << buffer.string() << "\"\n";
