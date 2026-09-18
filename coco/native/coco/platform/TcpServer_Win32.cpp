@@ -39,7 +39,7 @@ bool TcpServer_Win32::listen(uint16_t protocolId, uint16_t port) {
     // add socket to completion port of event loop
     if (CreateIoCompletionPort(
         (HANDLE)socket,
-        loop_.port,
+        loop_.port(),
         ULONG_PTR(&static_cast<Loop_Win32::CompletionHandler &>(*this)),
         0) == nullptr)
     {
@@ -78,10 +78,10 @@ void TcpServer_Win32::close() {
     socket_ = INVALID_SOCKET;
 }
 
-void TcpServer_Win32::handle(OVERLAPPED *overlapped) {
+void TcpServer_Win32::onCompletion(OVERLAPPED *overlapped) {
     for (auto &socket : sockets_) {
         if (overlapped == &socket.overlapped_) {
-            socket.handleAccept(overlapped);
+            socket.onAccept(overlapped);
             break;
         }
     }
@@ -149,7 +149,7 @@ bool TcpServer_Win32::Socket::accept() {
     // add socket to completion port of event loop
     if (CreateIoCompletionPort(
         (HANDLE)socket,
-        server.loop_.port,
+        server.loop_.port(),
         ULONG_PTR(&static_cast<Loop_Win32::CompletionHandler &>(*this)),
         0) == nullptr)
     {
@@ -197,7 +197,7 @@ ip::Endpoint &TcpServer_Win32::Socket::getEndpoint(bool remote) {
     return addressBuffers_[int(remote)].endpoint;
 }
 
-void TcpServer_Win32::Socket::handleAccept(OVERLAPPED *overlapped) {
+void TcpServer_Win32::Socket::onAccept(OVERLAPPED *overlapped) {
     // result of AcceptEx
     DWORD transferred;
     DWORD flags;
@@ -222,7 +222,7 @@ void TcpServer_Win32::Socket::handleAccept(OVERLAPPED *overlapped) {
     }
 }
 
-void TcpServer_Win32::Socket::handle(OVERLAPPED *overlapped) {
+void TcpServer_Win32::Socket::onCompletion(OVERLAPPED *overlapped) {
     /*for (auto &buffer : transfers_) {
         if (overlapped == &buffer.overlapped_) {
             buffer.handle(overlapped);
@@ -232,7 +232,7 @@ void TcpServer_Win32::Socket::handle(OVERLAPPED *overlapped) {
     // search the buffer that caused the event
     for (auto &buffer : buffers_) {
         if (overlapped == &buffer.overlapped_) {
-            buffer.handle(overlapped);
+            buffer.onCompletion(overlapped);
             break;
         }
     }
@@ -263,7 +263,7 @@ bool TcpServer_Win32::Buffer::start() {
         return false;
     }
 
-    // store read/write flags for use in transfer(), handle() and cancel()
+    // store read/write flags for use in transfer(), onCompletion() and cancel()
     steps_ = uint8_t(op_ & Op::READ_WRITE);
 
     // start transfer
@@ -321,7 +321,7 @@ bool TcpServer_Win32::Buffer::transfer() {
     return true;
 }
 
-void TcpServer_Win32::Buffer::handle(OVERLAPPED *overlapped) {
+void TcpServer_Win32::Buffer::onCompletion(OVERLAPPED *overlapped) {
     DWORD transferred;
     DWORD flags;
     auto result = WSAGetOverlappedResult(device_.socket_, overlapped, &transferred, false, &flags);

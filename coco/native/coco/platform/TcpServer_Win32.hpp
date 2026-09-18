@@ -38,16 +38,15 @@ public:
 
     protected:
         bool transfer();
-        void handle(OVERLAPPED *overlapped);
+        void onCompletion(OVERLAPPED *overlapped);
 
         Socket &device_;
         OVERLAPPED overlapped_;
-        //Op op_;
     };
 
     /// @brief Server socket that can accept a connection
     ///
-    class Socket : public TcpServer::Socket, public Loop_Win32::CompletionHandler , public IntrusiveListNode {
+    class Socket : public TcpServer::Socket, public Loop_Win32::CompletionHandler, public IntrusiveListNode {
         friend class TcpServer_Win32;
         friend class Buffer;
     public:
@@ -66,8 +65,8 @@ public:
         ip::Endpoint &getEndpoint(bool remote) override;
 
     protected:
-        void handleAccept(OVERLAPPED *overlapped);
-        void handle(OVERLAPPED *overlapped) override;
+        void onAccept(OVERLAPPED *overlapped);
+        void onCompletion(OVERLAPPED *overlapped) override;
 
         TcpServer_Win32 &server_;
 
@@ -90,7 +89,7 @@ public:
     };
 
 protected:
-    void handle(OVERLAPPED *overlapped) override;
+    void onCompletion(OVERLAPPED *overlapped) override;
 
     Loop_Win32 &loop_;
 
