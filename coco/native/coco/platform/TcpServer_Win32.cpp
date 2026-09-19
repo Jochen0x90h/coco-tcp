@@ -24,17 +24,16 @@ bool TcpServer_Win32::listen(uint16_t protocolId, uint16_t port) {
     // create socket
     SOCKET socket = WSASocket(protocolId, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
     if (socket == INVALID_SOCKET) {
-        int e = WSAGetLastError();
+        int error = WSAGetLastError();
+        //setSystemError(error);
         return false;
     }
 
-    // bind to local port
     sockaddr_in6 local = {.sin6_family = protocolId, .sin6_port = htons(port)};
-    if (bind(socket, (struct sockaddr *)&local, sizeof(local)) != 0) {
-        int e = WSAGetLastError();
-        closesocket(socket);
-        return false;
-    }
+
+    // bind to local port
+    if (bind(socket, (struct sockaddr *)&local, sizeof(local)) == SOCKET_ERROR)
+        goto error;
 
     // add socket to completion port of event loop
     if (CreateIoCompletionPort(
@@ -43,18 +42,12 @@ bool TcpServer_Win32::listen(uint16_t protocolId, uint16_t port) {
         ULONG_PTR(&static_cast<Loop_Win32::CompletionHandler &>(*this)),
         0) == nullptr)
     {
-        int e = WSAGetLastError();
-        closesocket(socket);
-        return false;
+        goto error;
     }
 
     // listen
-    int result = ::listen(socket, 100);
-    if (result == SOCKET_ERROR) {
-        int e = WSAGetLastError();
-        closesocket(socket);
-        return false;
-    }
+    if (::listen(socket, 100) == SOCKET_ERROR)
+        goto error;
 
     // get AcceptEx
     GUID guidAcceptEx = WSAID_ACCEPTEX;
@@ -64,13 +57,16 @@ bool TcpServer_Win32::listen(uint16_t protocolId, uint16_t port) {
         &AcceptEx, sizeof(AcceptEx),
         &transferred, NULL, NULL) != 0)
     {
-        int e = WSAGetLastError();
-        closesocket(socket);
-        return false;
+        goto error;
     }
     protocolId_ = protocolId;
     socket_ = socket;
     return true;
+error:
+    int error = WSAGetLastError();
+    //setSystemError(error);
+    closesocket(socket);
+    return false;
 }
 
 void TcpServer_Win32::close() {
@@ -142,7 +138,8 @@ bool TcpServer_Win32::Socket::accept() {
     // create socket
     SOCKET socket = WSASocket(server.protocolId_, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED);
     if (socket == INVALID_SOCKET) {
-        int e = WSAGetLastError();
+        int error = WSAGetLastError();
+        setSystemError(error);
         return false;
     }
 
@@ -153,7 +150,8 @@ bool TcpServer_Win32::Socket::accept() {
         ULONG_PTR(&static_cast<Loop_Win32::CompletionHandler &>(*this)),
         0) == nullptr)
     {
-        int e = WSAGetLastError();
+        int error = WSAGetLastError();
+        setSystemError(error);
         closesocket(socket);
         return false;
     }
@@ -173,6 +171,7 @@ bool TcpServer_Win32::Socket::accept() {
         int error = WSAGetLastError();
         if (error != ERROR_IO_PENDING) {
             // "real" error
+            setSystemError(error);
             closesocket(socket);
             return false;
         }

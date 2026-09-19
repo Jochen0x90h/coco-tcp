@@ -16,14 +16,20 @@ if(${PLATFORM} STREQUAL "native" OR ${PLATFORM} STREQUAL "emu")
         #PRIVATE
     )
     if(WIN32)
-        # Winsock2
+        # IOCP/Winsock2
         target_sources(${PROJECT_NAME}
             PUBLIC FILE_SET platform_headers FILES
                 native/coco/platform/TcpServer_Win32.hpp
-                #native/coco/platform/TcpSocket_Win32.hpp
             PRIVATE
                 native/coco/platform/TcpServer_Win32.cpp
-                #native/coco/platform/TcpSocket_Win32.cpp
+        )
+    elseif(LINUX)
+        # io_uring
+        target_sources(${PROJECT_NAME}
+            PUBLIC FILE_SET platform_headers FILES
+                native/coco/platform/TcpServer_io_uring.hpp
+            PRIVATE
+                native/coco/platform/TcpServer_io_uring.cpp
         )
     endif()
 elseif(${PLATFORM} MATCHES "^nrf52")
