@@ -21,7 +21,7 @@ Coroutine server(Loop &loop, TcpServer::Socket &serverSocket, Buffer &buffer) {
     co_await buffer.read();
 
     // get remote endpoint
-    auto &ep = serverSocket.getEndpoint(true);
+    auto ep = serverSocket.getEndpoint(true);
 
     // output received size
     debug::out << "Server: Received " << dec(buffer.size()) << " bytes\n";

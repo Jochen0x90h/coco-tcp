@@ -182,9 +182,9 @@ bool TcpServer_Win32::Socket::accept() {
     state_ = State::OPENING;
 
     // enable buffers
-    for (auto &buffer : buffers_) {
-        buffer.setReady();
-    }
+    //for (auto &buffer : buffers_) {
+    //    buffer.setReady();
+    //}
 
     // resume all coroutines waiting for state change
     notify(Events::ENTER_OPENING);
@@ -192,7 +192,7 @@ bool TcpServer_Win32::Socket::accept() {
     return true;
 }
 
-ip::Endpoint &TcpServer_Win32::Socket::getEndpoint(bool remote) {
+ip::Endpoint TcpServer_Win32::Socket::getEndpoint(bool remote) {
     return addressBuffers_[int(remote)].endpoint;
 }
 
@@ -202,32 +202,37 @@ void TcpServer_Win32::Socket::onAccept(OVERLAPPED *overlapped) {
     DWORD flags;
     auto result = WSAGetOverlappedResult(socket_, overlapped, &transferred, false, &flags);
     if (!result) {
-        // "real" error or cancelled (ERROR_OPERATION_ABORTED): close
+        // accept error
+        // ERROR_OPERATION_ABORTED: canceled
         auto error = WSAGetLastError();
-        close();
+        setSystemError(error);
+
+        // close socket
+        closesocket(socket_);
+        socket_ = INVALID_SOCKET;
+
+        // set state
+        state_ = State::DISABLED;
+
+        // resume all coroutines waiting for disabled state
+        notify(Events::ENTER_DISABLED);        
     } else {
+        // accept success
         setsockopt(socket_, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, (char *)&server_.socket_, sizeof(SOCKET));
 
         // set state
         state_ = State::READY;
 
-        // start pending transfers
-        //for (auto &buffer : transfers_) {
-        //    buffer.start();
-        //}
-
+        // enable buffers
+        for (auto &buffer : buffers_) {
+            buffer.setReady();
+        }
         // resume all coroutines waiting for state change
         notify(Events::ENTER_READY);
     }
 }
 
 void TcpServer_Win32::Socket::onCompletion(OVERLAPPED *overlapped) {
-    /*for (auto &buffer : transfers_) {
-        if (overlapped == &buffer.overlapped_) {
-            buffer.handle(overlapped);
-            break;
-        }
-    }*/
     // search the buffer that caused the event
     for (auto &buffer : buffers_) {
         if (overlapped == &buffer.overlapped_) {
@@ -324,7 +329,12 @@ void TcpServer_Win32::Buffer::onCompletion(OVERLAPPED *overlapped) {
     DWORD transferred;
     DWORD flags;
     auto result = WSAGetOverlappedResult(device_.socket_, overlapped, &transferred, false, &flags);
-    if (result) {
+    if (!result) {
+        // error
+        // canceled: ERROR_OPERATION_ABORTED
+        auto error = WSAGetLastError();
+        setSystemError(error);
+    } else {
         // success, check for read after write
         if (Op(steps_) == Op::READ_WRITE) {
             steps_ = int(Op::READ);
@@ -332,11 +342,6 @@ void TcpServer_Win32::Buffer::onCompletion(OVERLAPPED *overlapped) {
             return;
         }
         setSuccess(transferred);
-    } else {
-        // error
-        // canceled: ERROR_OPERATION_ABORTED
-        auto error = WSAGetLastError();
-        setSystemError(error);
     }
 
     // transfer finished

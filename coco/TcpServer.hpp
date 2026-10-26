@@ -37,7 +37,7 @@ public:
 
         /// @brief get local or remote endpoint after accept() succeeded (device is in READY state)
         /// @return Local or remote endpoint
-        virtual ip::Endpoint &getEndpoint(bool remote) = 0;
+        virtual ip::Endpoint getEndpoint(bool remote) = 0;
     };
 };
 

@@ -38,6 +38,8 @@ public:
 
     protected:
         bool transfer();
+
+        // Loop_Win32::CompletionHandler methods
         void onCompletion(OVERLAPPED *overlapped);
 
         Socket &device_;
@@ -62,10 +64,12 @@ public:
 
         // TcpServer::Socket methods
         bool accept() override;
-        ip::Endpoint &getEndpoint(bool remote) override;
+        ip::Endpoint getEndpoint(bool remote) override;
 
     protected:
         void onAccept(OVERLAPPED *overlapped);
+        
+        // Loop_Win32::CompletionHandler methods
         void onCompletion(OVERLAPPED *overlapped) override;
 
         TcpServer_Win32 &server_;

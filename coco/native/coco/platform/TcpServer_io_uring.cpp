@@ -82,8 +82,8 @@ void TcpServer_io_uring::Socket::close() {
     socket_ = INVALID_SOCKET;
 
     // clear local and remote address
-    addressBuffers_[0].endpoint = {};
-    addressBuffers_[1].endpoint = {};
+    //addressBuffers_[0].endpoint = {};
+    //addressBuffers_[1].endpoint = {};
 
     // set state
     state_ = State::DISABLED;
@@ -106,7 +106,7 @@ TcpServer_io_uring::Buffer &TcpServer_io_uring::Socket::getBuffer(int index) {
 }
 
 bool TcpServer_io_uring::Socket::accept() {
-    if (socket_ != INVALID_SOCKET)
+    if (state_ == State::OPENING || socket_ != INVALID_SOCKET)
         return false;
 
     auto &server = server_;
@@ -119,35 +119,19 @@ bool TcpServer_io_uring::Socket::accept() {
         return false;
     }
 
-   
     // accept
-    // https://learn.microsoft.com/de-de/windows/win32/api/mswsock/nf-mswsock-acceptex
-    memset(&overlapped_, 0, sizeof(OVERLAPPED));
-    if (server.AcceptEx(
-        server.socket_,
-        socket,
-        addressBuffers_, // buffer for addresses
-        0, // receive size
-        sizeof(AddressBuffer), sizeof(AddressBuffer), // sizes for local and remote address
-        nullptr,
-        &overlapped_) == FALSE)
-    {
-        int error = WSAGetLastError();
-        if (error != ERROR_IO_PENDING) {
-            // "real" error
-            closesocket(socket);
-            return false;
-        }
+    endpointSize_ = sizeof(endpoint_);
+    bool result = server_.loop_.accept(*this,
+        server_.socket_, // listening socket
+        &endpoint_, &endpointSize_); // remote address and port
+    if (!result) {
+        // error: submit queue full
+        setError(std::errc::resource_unavailable_try_again);
+        return false;
     }
-    socket_ = socket;
 
     // set state
     state_ = State::OPENING;
-
-    // enable buffers
-    for (auto &buffer : buffers_) {
-        buffer.setReady();
-    }
 
     // resume all coroutines waiting for state change
     notify(Events::ENTER_OPENING);
@@ -155,55 +139,52 @@ bool TcpServer_io_uring::Socket::accept() {
     return true;
 }
 
-ip::Endpoint &TcpServer_io_uring::Socket::getEndpoint(bool remote) {
-    return addressBuffers_[int(remote)].endpoint;
+ip::Endpoint TcpServer_io_uring::Socket::getEndpoint(bool remote) {
+    if (!remote) {
+        // local
+        ip::Endpoint endpoint = {};
+        socklen_t endpointSize = sizeof(endpoint);
+        getsockname(socket_, reinterpret_cast<struct sockaddr*>(&endpoint), &endpointSize);
+        return endpoint;
+    } else {
+        // remote
+        return endpoint_;
+    }
 }
 
-void TcpServer_io_uring::Socket::onAccept(OVERLAPPED *overlapped) {
-    // result of AcceptEx
-    DWORD transferred;
-    DWORD flags;
-    auto result = WSAGetOverlappedResult(socket_, overlapped, &transferred, false, &flags);
-    if (!result) {
-        // "real" error or cancelled (ERROR_OPERATION_ABORTED): close
-        auto error = WSAGetLastError();
-        close();
+void TcpServer_io_uring::Socket::onCompletion(io_uring_cqe &cqe, int) {
+   int result = cqe.res;
+    if (result < 0) {
+        // accept error
+        int error = -result;
+        setSystemError(error);
+
+        // set state
+        state_ = State::DISABLED;
+
+        // resume all coroutines waiting for state change
+        notify(Events::ENTER_DISABLED);
     } else {
-        setsockopt(socket_, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, (char *)&server_.socket_, sizeof(SOCKET));
+        // accept success
+        socket_ = result;
 
         // set state
         state_ = State::READY;
 
-        // start pending transfers
-        //for (auto &buffer : transfers_) {
-        //    buffer.start();
-        //}
+        // enable buffers
+        for (auto &buffer : buffers_) {
+            buffer.setReady();
+        }
 
         // resume all coroutines waiting for state change
         notify(Events::ENTER_READY);
     }
 }
 
-void TcpServer_io_uring::Socket::onCompletion(OVERLAPPED *overlapped) {
-    /*for (auto &buffer : transfers_) {
-        if (overlapped == &buffer.overlapped_) {
-            buffer.handle(overlapped);
-            break;
-        }
-    }*/
-    // search the buffer that caused the event
-    for (auto &buffer : buffers_) {
-        if (overlapped == &buffer.overlapped_) {
-            buffer.onCompletion(overlapped);
-            break;
-        }
-    }
-}
-
 
 // TcpServer_io_uring::Buffer
 
-TcpServer_io_uring::Buffer::Buffer(TcpServer_Win32::Socket &device, int size)
+TcpServer_io_uring::Buffer::Buffer(TcpServer_io_uring::Socket &device, int size)
     : coco::Buffer(new uint8_t[size], size, device.state_)
     , device_(device)
 {
@@ -239,16 +220,13 @@ bool TcpServer_io_uring::Buffer::start() {
 }
 
 bool TcpServer_io_uring::Buffer::cancel() {
-    if (state_ != State::BUSY)
+   if (state_ != State::BUSY)
         return false;
 
     if (steps_ != 0) {
-        auto result = CancelIoEx((HANDLE)device_.socket_, &overlapped_);
-        if (!result) {
-            // error
-            auto error = WSAGetLastError();
-            setSystemError(error);
-            //debug::out << "cancel error " << dec(e) << '\n';
+        if (!device_.server_.loop_.cancel(*this)) {
+            // error: submit buffer full
+            setError(std::errc::resource_unavailable_try_again);
             return false;
         }
         steps_ = 0;
@@ -257,49 +235,43 @@ bool TcpServer_io_uring::Buffer::cancel() {
 }
 
 bool TcpServer_io_uring::Buffer::transfer() {
-    // initialize overlapped
-    memset(&overlapped_, 0, sizeof(OVERLAPPED));
-
-    int result;
-    if ((Op(steps_) & Op::WRITE) == 0) {
-        // receive
-        WSABUF buffer{capacity_, (CHAR*)(data_)};
-        DWORD flags = 0;
-        result = WSARecv(device_.socket_, &buffer, 1, nullptr, &flags, &overlapped_, nullptr);
-    } else {
-        // send
-        WSABUF buffer{size_, (CHAR*)(data_)};
-        result = WSASend(device_.socket_, &buffer, 1, nullptr, 0, &overlapped_, nullptr);
+    if (!device_.server_.loop_.transfer(*this, (Op(steps_) & Op::WRITE) == 0 ? IORING_OP_RECV : IORING_OP_SEND,
+        device_.socket_, data_, size_))
+    {
+        // error: submit queue full
+        setError(std::errc::resource_unavailable_try_again);
+        setReady();
+        return false;
     }
-
-    if (result != 0) {
-        int error = WSAGetLastError();
-        if (error != WSA_IO_PENDING) {
-            // error
-            setSystemError(error);
-            setReady();
-            return false;        }
-    }
-    return true;
+    return true;    
 }
 
-void TcpServer_io_uring::Buffer::onCompletion(OVERLAPPED *overlapped) {
-    DWORD transferred;
-    DWORD flags;
-    auto result = WSAGetOverlappedResult(device_.socket_, overlapped, &transferred, false, &flags);
-    if (result) {
-        // success, check for read after write
+void TcpServer_io_uring::Buffer::onCompletion(io_uring_cqe &cqe, int id) {
+   int result = cqe.res;
+    if (result < 0) {
+        // error
+        // ECANCELED: cancelled
+        // EMSGSIZE: datagram was larger than buffer (for UDP)
+        int error = -result;
+        setSystemError(error);
+    } else {
+        // success
+        int transferred = result;
+
+        // check for connection closed by peer
+        if (Op(steps_) == Op::READ && transferred == 0) {
+            device_.close();
+            return;
+        }
+
+        // check for read after write
         if (Op(steps_) == Op::READ_WRITE) {
             steps_ = int(Op::READ);
             transfer();
             return;
         }
+
         setSuccess(transferred);
-    } else {
-        // error
-        // canceled: ERROR_OPERATION_ABORTED
-        auto error = WSAGetLastError();
-        setSystemError(error);
     }
 
     // transfer finished

@@ -34,6 +34,8 @@ public:
 
     protected:
         bool transfer();
+
+        // Loop_io_uring::CompletionHandler methods
         void onCompletion(io_uring_cqe &cqe, int);
 
         Socket &device_;
@@ -57,10 +59,10 @@ public:
 
         // TcpServer::Socket methods
         bool accept() override;
-        ip::Endpoint &getEndpoint(bool remote) override;
+        ip::Endpoint getEndpoint(bool remote) override;
 
-    protected:
-        //void onAccept(OVERLAPPED *overlapped);
+    protected:       
+        // Loop_io_uring::CompletionHandler methods
         void onCompletion(io_uring_cqe &cqe, int) override;
 
         TcpServer_io_uring &server_;
@@ -68,13 +70,8 @@ public:
         // socket handle
         int socket_ = INVALID_SOCKET;
 
-        // local and remote address
-        struct AddressBuffer {
-            ip::Endpoint endpoint = {};
-            uint8_t extra[16]; // see AcceptEx documentation
-        };
-        AddressBuffer addressBuffers_[2];
-        //OVERLAPPED overlapped_;
+        ip::Endpoint endpoint_ = {};
+        socklen_t endpointSize_;
 
         // list of buffers
         IntrusiveList<Buffer> buffers_;
