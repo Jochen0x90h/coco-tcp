@@ -30,6 +30,7 @@ bool TcpServer_Win32::listen(uint16_t protocolId, uint16_t port) {
     }
 
     sockaddr_in6 local = {.sin6_family = protocolId, .sin6_port = htons(port)};
+    GUID guidAcceptEx = WSAID_ACCEPTEX;
 
     // bind to local port
     if (bind(socket, (struct sockaddr *)&local, sizeof(local)) == SOCKET_ERROR)
@@ -50,7 +51,6 @@ bool TcpServer_Win32::listen(uint16_t protocolId, uint16_t port) {
         goto error;
 
     // get AcceptEx
-    GUID guidAcceptEx = WSAID_ACCEPTEX;
     DWORD transferred;
     if (WSAIoctl(socket, SIO_GET_EXTENSION_FUNCTION_POINTER,
         &guidAcceptEx, sizeof(guidAcceptEx),
@@ -215,7 +215,7 @@ void TcpServer_Win32::Socket::onAccept(OVERLAPPED *overlapped) {
         state_ = State::DISABLED;
 
         // resume all coroutines waiting for disabled state
-        notify(Events::ENTER_DISABLED);        
+        notify(Events::ENTER_DISABLED);
     } else {
         // accept success
         setsockopt(socket_, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, (char *)&server_.socket_, sizeof(SOCKET));
